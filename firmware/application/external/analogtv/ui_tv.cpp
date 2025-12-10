@@ -102,6 +102,17 @@ void TVView::on_adjust_xcorr(uint8_t xcorr) {
     x_correction = xcorr;
 }
 
+void TVView::set_tv_standard(TVStandard standard) {
+    tv_standard = standard;
+    count = 0;  // Reset frame counter when standard changes
+}
+
+uint32_t TVView::get_lines_per_frame() const {
+    // PAL: 625 lines total -> 312.5 lines per field -> ~104 lines at 1/3 -> 52 lines per frame
+    // NTSC: 525 lines total -> 262.5 lines per field -> ~87.5 lines at 1/3 -> ~44 lines per frame
+    return (tv_standard == TVStandard::PAL) ? 52 : 44;
+}
+
 void TVView::on_channel_spectrum(
     const ChannelSpectrum& spectrum) {
     // portapack has limitations
@@ -136,7 +147,8 @@ void TVView::on_channel_spectrum(
         video_buffer_int[i + count * 256] = 255 - spectrum.db[i];
     }
     count = count + 1;
-    if (count == 52 - 1) {
+    uint32_t lines_per_frame = get_lines_per_frame();
+    if (count == lines_per_frame - 1) {
         ui::Color line_buffer[128];
         Coord line;
         uint32_t bmp_px;
@@ -151,7 +163,10 @@ void TVView::on_channel_spectrum(
 
                         display.render_line({ 0, line + 100 }, 128, line_buffer);
                 }*/
-        for (line = 0; line < 208; line = line + 2) {
+        // Render lines: each source line is drawn twice to double the height
+        // PAL: 52 lines -> 104 display lines, NTSC: 44 lines -> 88 display lines
+        uint32_t display_lines = lines_per_frame * 2;
+        for (line = 0; line < display_lines; line = line + 2) {
             for (bmp_px = 0; bmp_px < 128; bmp_px++) {
                 // line_buffer[bmp_px] = video_buffer[bmp_px+line*128];
                 line_buffer[bmp_px] = spectrum_rgb4_lut[video_buffer_int[bmp_px + line / 2 * 128 + x_correction]];
@@ -228,6 +243,10 @@ void TVWidget::on_channel_spectrum(const ChannelSpectrum& spectrum) {
     tv_view.on_channel_spectrum(spectrum);
     tv_view.on_adjust_xcorr(field_xcorr.value());
     sampling_rate = spectrum.sampling_rate;
+}
+
+void TVWidget::set_tv_standard(TVStandard standard) {
+    tv_view.set_tv_standard(standard);
 }
 
 void TVWidget::on_audio_spectrum() {

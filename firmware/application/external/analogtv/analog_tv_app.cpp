@@ -51,6 +51,7 @@ AnalogTvView::AnalogTvView(
                   &field_lna,
                   &field_vga,
                   &options_modulation,
+                  &options_tv_standard,
                   &field_volume,
                   &tv});
 
@@ -77,6 +78,16 @@ AnalogTvView::AnalogTvView(
 
     tv.on_select = [this](int32_t offset) {
         field_frequency.set_value(receiver_model.target_frequency() + offset);
+    };
+
+    // Load TV standard setting
+    auto tv_standard_value = settings_.get_int("tv_standard", toUType(tv::TVStandard::PAL));
+    options_tv_standard.set_by_value(tv_standard_value);
+    tv.set_tv_standard(static_cast<tv::TVStandard>(tv_standard_value));
+
+    options_tv_standard.on_change = [this](size_t, OptionsField::value_t v) {
+        auto standard = static_cast<tv::TVStandard>(v);
+        this->on_tv_standard_changed(standard);
     };
 
     update_modulation(static_cast<ReceiverModel::Mode>(modulation));
@@ -204,6 +215,11 @@ void AnalogTvView::update_modulation(const ReceiverModel::Mode modulation) {
 
 void AnalogTvView::on_freqchg(int64_t freq) {
     field_frequency.set_value(freq);
+}
+
+void AnalogTvView::on_tv_standard_changed(tv::TVStandard standard) {
+    tv.set_tv_standard(standard);
+    settings_.set_int("tv_standard", toUType(standard));
 }
 
 }  // namespace ui::external_app::analogtv

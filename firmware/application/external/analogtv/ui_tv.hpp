@@ -36,6 +36,11 @@
 namespace ui::external_app::analogtv {
 namespace tv {
 
+enum class TVStandard : uint8_t {
+    PAL = 0,
+    NTSC = 1
+};
+
 class TimeScopeView : public View {
    public:
     TimeScopeView(const Rect parent_rect);
@@ -79,13 +84,17 @@ class TVView : public Widget {
     void paint(Painter& painter) override;
     void on_channel_spectrum(const ChannelSpectrum& spectrum);
     void on_adjust_xcorr(uint8_t xcorr);
+    void set_tv_standard(TVStandard standard);
+    TVStandard get_tv_standard() const { return tv_standard; }
     // ui::Color video_buffer[13312];
     uint8_t video_buffer_int[13312 + 128]{0};  // 128 is for the over length caused by x_correction
     uint32_t count = 0;
     uint8_t x_correction = 0;
+    TVStandard tv_standard = TVStandard::PAL;
 
    private:
     void clear();
+    uint32_t get_lines_per_frame() const;
 };
 
 class TVWidget : public View {
@@ -105,6 +114,8 @@ class TVWidget : public View {
     void set_parent_rect(const Rect new_parent_rect) override;
 
     void show_audio_spectrum_view(const bool show);
+    void set_tv_standard(TVStandard standard);
+    TVStandard get_tv_standard() const { return tv_view.get_tv_standard(); }
 
     void paint(Painter& painter) override;
     NumberField field_xcorr{

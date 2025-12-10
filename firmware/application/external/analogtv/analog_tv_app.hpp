@@ -92,6 +92,14 @@ class AnalogTvView : public View {
     AudioVolumeField field_volume{
         {27 * 8, UI_POS_Y(0)}};
 
+    OptionsField options_tv_standard{
+        {UI_POS_X(0), UI_POS_Y(1)},
+        5,
+        {
+            {"PAL ", toUType(tv::TVStandard::PAL)},
+            {"NTSC", toUType(tv::TVStandard::NTSC)},
+        }};
+
     std::unique_ptr<Widget> options_widget{};
 
     tv::TVWidget tv{};
@@ -103,6 +111,7 @@ class AnalogTvView : public View {
     void on_show_options_modulation();
     void on_frequency_step_changed(rf::Frequency f);
     void on_reference_ppm_correction_changed(int32_t v);
+    void on_tv_standard_changed(tv::TVStandard standard);
 
     void remove_options_widget();
     void set_options_widget(std::unique_ptr<Widget> new_widget);
