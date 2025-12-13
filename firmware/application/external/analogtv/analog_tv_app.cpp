@@ -81,9 +81,8 @@ AnalogTvView::AnalogTvView(
     };
 
     // Load TV standard setting
-    auto tv_standard_value = settings_.get_int("tv_standard", toUType(tv::TVStandard::PAL));
-    options_tv_standard.set_by_value(tv_standard_value);
-    tv.set_tv_standard(static_cast<tv::TVStandard>(tv_standard_value));
+    options_tv_standard.set_by_value(tv_standard_);
+    tv.set_tv_standard(static_cast<tv::TVStandard>(tv_standard_));
 
     options_tv_standard.on_change = [this](size_t, OptionsField::value_t v) {
         auto standard = static_cast<tv::TVStandard>(v);
@@ -219,7 +218,7 @@ void AnalogTvView::on_freqchg(int64_t freq) {
 
 void AnalogTvView::on_tv_standard_changed(tv::TVStandard standard) {
     tv.set_tv_standard(standard);
-    settings_.set_int("tv_standard", toUType(standard));
+    tv_standard_ = toUType(standard);
 }
 
 }  // namespace ui::external_app::analogtv

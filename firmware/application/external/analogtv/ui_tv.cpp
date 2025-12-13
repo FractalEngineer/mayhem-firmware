@@ -166,7 +166,7 @@ void TVView::on_channel_spectrum(
         // Render lines: each source line is drawn twice to double the height
         // PAL: 52 lines -> 104 display lines, NTSC: 44 lines -> 88 display lines
         uint32_t display_lines = lines_per_frame * 2;
-        for (line = 0; line < display_lines; line = line + 2) {
+        for (line = 0; static_cast<uint32_t>(line) < display_lines; line = line + 2) {
             for (bmp_px = 0; bmp_px < 128; bmp_px++) {
                 // line_buffer[bmp_px] = video_buffer[bmp_px+line*128];
                 line_buffer[bmp_px] = spectrum_rgb4_lut[video_buffer_int[bmp_px + line / 2 * 128 + x_correction]];

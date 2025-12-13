@@ -55,8 +55,12 @@ class AnalogTvView : public View {
 
     NavigationView& nav_;
     RxRadioState radio_state_{};
+    uint8_t tv_standard_ = toUType(tv::TVStandard::PAL);
     app_settings::SettingsManager settings_{
-        "rx_tv", app_settings::Mode::RX};
+        "rx_tv", app_settings::Mode::RX,
+        SettingBindings{
+            BoundSetting("tv_standard"sv, &tv_standard_)
+        }};
 
     const Rect options_view_rect{UI_POS_X(0), 1 * 16, screen_width, 1 * 16};
     const Rect nbfm_view_rect{UI_POS_X(0), 1 * 16, 18 * 8, 1 * 16};
