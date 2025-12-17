@@ -60,7 +60,6 @@ set(EXTCPPSRC
 	external/tetris/main.cpp
 	external/tetris/ui_tetris.cpp
 
-
 	#extsensors 192 byte
 	external/extsensors/main.cpp
 	external/extsensors/ui_extsensors.cpp
@@ -111,7 +110,6 @@ set(EXTCPPSRC
 	#wefax_rx 192 bytes
 	external/wefax_rx/main.cpp
 	external/wefax_rx/ui_wefax_rx.cpp
-
 
 	#noaaapt_rx  72 bytes
 	external/noaaapt_rx/main.cpp
@@ -174,7 +172,6 @@ set(EXTCPPSRC
 	external/wav_view/main.cpp
 	external/wav_view/ui_view_wav.cpp
 
-
 	# wipe sdcard 16 byte
 	external/sd_wipe/main.cpp
 	external/sd_wipe/ui_sd_wipe.cpp
@@ -186,7 +183,6 @@ set(EXTCPPSRC
 	#snake 240 bytes
 	external/snake/main.cpp
 	external/snake/ui_snake.cpp
-
 
 	#stopwatch 0
 	external/stopwatch/main.cpp
@@ -264,6 +260,10 @@ set(EXTCPPSRC
 	#adult_toys_controller  144 bytes 
 	external/adult_toys_controller/main.cpp
 	external/adult_toys_controller/ui_adult_toys_controller.cpp
+
+	#spectrum_analyzer
+	external/spectrum_analyzer/main.cpp
+	external/spectrum_analyzer/spectrum_analyzer_app.cpp	
 )
 
 set(EXTAPPLIST
@@ -272,6 +272,7 @@ set(EXTAPPLIST
 	font_viewer
 	blespam
 	analogtv
+	spectrum_analyzer
 	nrf_rx
 	coasterp
 	lge
