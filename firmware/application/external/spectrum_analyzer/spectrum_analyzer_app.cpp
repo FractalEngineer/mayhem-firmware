@@ -47,18 +47,18 @@ void SpectrumFFTView::paint(Painter& painter) {
 void SpectrumFFTView::on_channel_spectrum(const ChannelSpectrum& spectrum) {
     // Convert spectrum to display format
     // Spectrum has 256 bins, we need 240 for display
+    // Map spectrum bins similar to how waterfall does it
     for (size_t i = 0; i < display_bins; i++) {
-        // Map spectrum bins to display bins
-        // Center the display around the middle of the spectrum
         size_t bin_idx;
+        // Map to match waterfall display: first half uses upper bins, second half uses lower bins
         if (i < display_bins / 2) {
             bin_idx = 256 - display_bins / 2 + i;
         } else {
             bin_idx = i - display_bins / 2;
         }
 
-        // Convert dB value to waveform value
-        // spectrum.db is 0-255, convert to -128 to 127 for waveform
+        // Convert dB value to waveform value using same formula as AudioSpectrumView
+        // spectrum.db is 0-255, convert to -128 to 127 range for waveform
         int16_t value = ((int16_t)spectrum.db[bin_idx] - 127) * 256;
         spectrum_data[i] = value;
 
@@ -71,6 +71,7 @@ void SpectrumFFTView::on_channel_spectrum(const ChannelSpectrum& spectrum) {
     }
 
     waveform.set_dirty();
+    
     if (peak_hold_enabled) {
         peak_hold_waveform.set_dirty();
     }
@@ -97,6 +98,7 @@ SpectrumAnalyzerView::SpectrumAnalyzerView(NavigationView& nav)
 
     add_children({&rssi,
                   &channel,
+                  &labels,
                   &field_freq_start,
                   &field_freq_end,
                   &field_lna,
@@ -107,16 +109,25 @@ SpectrumAnalyzerView::SpectrumAnalyzerView(NavigationView& nav)
                   &frequency_scale,
                   &waterfall_widget});
 
-    // Initialize frequency fields
+    // Initialize frequency fields from persistent settings or defaults
     rf::Frequency center_freq = receiver_model.target_frequency();
-    field_freq_start.set_value(center_freq - bandwidth_hz / 2);
-    field_freq_end.set_value(center_freq + bandwidth_hz / 2);
+    if (freq_start_ > 0 && freq_end_ > 0) {
+        // Load from persistent settings
+        field_freq_start.set_value(freq_start_);
+        field_freq_end.set_value(freq_end_);
+    } else {
+        // Use defaults based on current center frequency
+        field_freq_start.set_value(center_freq - bandwidth_hz / 2);
+        field_freq_end.set_value(center_freq + bandwidth_hz / 2);
+    }
 
-    field_freq_start.on_change = [this](rf::Frequency) {
+    field_freq_start.updated = [this](rf::Frequency) {
+        freq_start_ = field_freq_start.value();
         this->on_frequency_changed();
     };
 
-    field_freq_end.on_change = [this](rf::Frequency) {
+    field_freq_end.updated = [this](rf::Frequency) {
+        freq_end_ = field_freq_end.value();
         this->on_frequency_changed();
     };
 
@@ -136,9 +147,15 @@ SpectrumAnalyzerView::SpectrumAnalyzerView(NavigationView& nav)
     };
 
     options_peak_hold.on_change = [this](size_t, OptionsField::value_t v) {
+        peak_hold_ = v;
         fft_view.set_peak_hold(v > 0);
     };
-    options_peak_hold.set_selected_index(0);
+    
+    // Load peak hold setting (must be after on_change is set)
+    options_peak_hold.set_selected_index(peak_hold_);
+    if (peak_hold_ > 0) {
+        fft_view.set_peak_hold(true);
+    }
 
     frequency_scale.set_focusable(true);
     frequency_scale.on_select = [this](int32_t offset) {
@@ -147,7 +164,7 @@ SpectrumAnalyzerView::SpectrumAnalyzerView(NavigationView& nav)
         on_frequency_changed();
     };
 
-    waterfall_widget.on_touch_select = [this](int32_t x, int32_t y) {
+    waterfall_widget.on_touch_select = [this](int32_t, int32_t y) {
         if (y > screen_height - screen_height * 0.1) return;
         frequency_scale.focus();
         // Calculate frequency offset from touch position
@@ -160,17 +177,20 @@ SpectrumAnalyzerView::SpectrumAnalyzerView(NavigationView& nav)
     // Setup receiver for 20MHz bandwidth
     update_receiver();
 
-    // Start spectrum streaming
+    // Start spectrum streaming (must be after receiver is enabled)
     baseband::spectrum_streaming_start();
-    
-    // Initialize waterfall widget
-    waterfall_widget.on_show();
 }
 
 SpectrumAnalyzerView::~SpectrumAnalyzerView() {
     baseband::spectrum_streaming_stop();
     receiver_model.disable();
     baseband::shutdown();
+}
+
+void SpectrumAnalyzerView::on_show() {
+    // Initialize waterfall widget when view is shown
+    waterfall_widget.on_show();
+    View::on_show();
 }
 
 void SpectrumAnalyzerView::on_hide() {
@@ -192,6 +212,11 @@ void SpectrumAnalyzerView::set_parent_rect(const Rect new_parent_rect) {
                                    new_parent_rect.width(),
                                    new_parent_rect.height() - header_height - fft_height - scale_height};
     waterfall_widget.set_parent_rect(waterfall_rect);
+    
+    // Re-initialize waterfall scroll area when rect changes (if already shown)
+    if (visible()) {
+        waterfall_widget.on_show();
+    }
 }
 
 void SpectrumAnalyzerView::focus() {
@@ -211,8 +236,14 @@ void SpectrumAnalyzerView::on_frequency_changed() {
     // Calculate center frequency
     rf::Frequency center = (start + end) / 2;
 
+    // Restart spectrum streaming when frequency changes
+    baseband::spectrum_streaming_stop();
+    
     // Update receiver frequency
     receiver_model.set_target_frequency(center);
+    
+    // Restart spectrum streaming
+    baseband::spectrum_streaming_start();
 }
 
 void SpectrumAnalyzerView::on_gain_changed() {
@@ -225,13 +256,18 @@ void SpectrumAnalyzerView::update_receiver() {
     receiver_model.set_sampling_rate(bandwidth_hz);
     receiver_model.set_baseband_bandwidth(bandwidth_hz);
     receiver_model.enable();
+    
+    // Configure baseband spectrum processing (must be after receiver is enabled)
+    // trigger = 127 means process every 128th buffer (for 20MHz, this gives good update rate)
+    constexpr size_t trigger = 127;
+    baseband::set_spectrum(bandwidth_hz, trigger);
 }
 
 void SpectrumAnalyzerView::on_channel_spectrum(const ChannelSpectrum& spectrum) {
     // Pass to FFT view for display
     fft_view.on_channel_spectrum(spectrum);
     
-    // Pass to waterfall widget
+    // Pass to waterfall widget (this will draw the waterfall)
     waterfall_widget.on_channel_spectrum(spectrum);
     
     // Update frequency scale

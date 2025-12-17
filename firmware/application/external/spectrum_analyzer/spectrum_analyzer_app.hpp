@@ -81,6 +81,7 @@ class SpectrumAnalyzerView : public View {
     SpectrumAnalyzerView(const SpectrumAnalyzerView&) = delete;
     SpectrumAnalyzerView& operator=(const SpectrumAnalyzerView&) = delete;
 
+    void on_show() override;
     void on_hide() override;
     void set_parent_rect(const Rect new_parent_rect) override;
     void focus() override;
@@ -96,8 +97,18 @@ class SpectrumAnalyzerView : public View {
 
     NavigationView& nav_;
     RxRadioState radio_state_{};
+    
+    // Persistent settings
+    uint32_t freq_start_{0};
+    uint32_t freq_end_{0};
+    uint8_t peak_hold_{0};
+    
     app_settings::SettingsManager settings_{
-        "spectrum_analyzer", app_settings::Mode::RX};
+        "spectrum_analyzer",
+        app_settings::Mode::RX,
+        {{"freq_start"sv, &freq_start_},
+         {"freq_end"sv, &freq_end_},
+         {"peak_hold"sv, &peak_hold_}}};
 
     RSSI rssi{
         {21 * 8, 0, 6 * 8, 4}};
@@ -105,24 +116,34 @@ class SpectrumAnalyzerView : public View {
     Channel channel{
         {21 * 8, 5, 6 * 8, 4}};
 
-    FrequencyField field_freq_start{
-        {5 * 8, UI_POS_Y(0)}};
+    Labels labels{
+        {{0 * 8, UI_POS_Y(0)}, "Start:", Theme::getInstance()->fg_light->foreground},
+        {{13 * 8, UI_POS_Y(0)}, "End:", Theme::getInstance()->fg_light->foreground},
+        {{0 * 8, UI_POS_Y(1)}, "LNA:", Theme::getInstance()->fg_light->foreground},
+        {{7 * 8, UI_POS_Y(1)}, "VGA:", Theme::getInstance()->fg_light->foreground},
+        {{14 * 8, UI_POS_Y(1)}, "AMP:", Theme::getInstance()->fg_light->foreground},
+        {{20 * 8, UI_POS_Y(1)}, "Peak:", Theme::getInstance()->fg_light->foreground}};
 
-    FrequencyField field_freq_end{
-        {15 * 8, UI_POS_Y(0)}};
+    RxFrequencyField field_freq_start{
+        {6 * 8, UI_POS_Y(0)},
+        nav_};
+
+    RxFrequencyField field_freq_end{
+        {20 * 8, UI_POS_Y(0)},
+        nav_};
 
     LNAGainField field_lna{
-        {5 * 8, UI_POS_Y(1)}};
+        {4 * 8, UI_POS_Y(1)}};
 
     VGAGainField field_vga{
-        {8 * 8, UI_POS_Y(1)}};
-
-    RFAmpField field_rf_amp{
         {11 * 8, UI_POS_Y(1)}};
 
+    RFAmpField field_rf_amp{
+        {18 * 8, UI_POS_Y(1)}};
+
     OptionsField options_peak_hold{
-        {18 * 8, UI_POS_Y(1)},
-        2,
+        {25 * 8, UI_POS_Y(1)},
+        3,
         {
             {"OFF", 0},
             {"ON ", 1},
