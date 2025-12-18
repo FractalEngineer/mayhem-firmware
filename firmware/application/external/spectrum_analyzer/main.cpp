@@ -73,7 +73,7 @@ __attribute__((section(".external_app.app_spectrum_analyzer.application_informat
         0x00,
         0x00,
     },
-    /*.icon_color = */ ui::Color::cyan().v,
+    /*.icon_color = */ ui::Color::yellow().v,
     /*.menu_location = */ app_location_t::RX,
     /*.desired_menu_position = */ -1,
 

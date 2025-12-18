@@ -85,15 +85,14 @@ class SpectrumAnalyzerView : public View {
     void on_hide() override;
     void set_parent_rect(const Rect new_parent_rect) override;
     void focus() override;
+    void paint(Painter& painter) override;
 
     std::string title() const override { return "Spectrum Analyzer"; };
 
    private:
-    static constexpr ui::Dim header_height = 3 * 16;
-    static constexpr ui::Dim fft_height = 2 * 16;
-    static constexpr ui::Dim scale_height = 20;
+    static constexpr ui::Dim header_height = 3 * 16 + 8;  // +8 to move FFT down 1 column
+    static constexpr ui::Dim fft_height = 3 * 16;
     static constexpr uint32_t bandwidth_hz = 20000000;  // 20 MHz fixed bandwidth
-    static constexpr Dim waterfall_start_y = header_height + fft_height + scale_height;
 
     NavigationView& nav_;
     RxRadioState radio_state_{};
@@ -101,7 +100,7 @@ class SpectrumAnalyzerView : public View {
     // Persistent settings
     uint32_t freq_start_{0};
     uint32_t freq_end_{0};
-    uint8_t peak_hold_{0};
+    bool peak_hold_{false};
     
     app_settings::SettingsManager settings_{
         "spectrum_analyzer",
@@ -117,48 +116,60 @@ class SpectrumAnalyzerView : public View {
         {21 * 8, 5, 6 * 8, 4}};
 
     Labels labels{
-        {{0 * 8, UI_POS_Y(0)}, "Start:", Theme::getInstance()->fg_light->foreground},
-        {{13 * 8, UI_POS_Y(0)}, "End:", Theme::getInstance()->fg_light->foreground},
-        {{0 * 8, UI_POS_Y(1)}, "LNA:", Theme::getInstance()->fg_light->foreground},
-        {{7 * 8, UI_POS_Y(1)}, "VGA:", Theme::getInstance()->fg_light->foreground},
-        {{14 * 8, UI_POS_Y(1)}, "AMP:", Theme::getInstance()->fg_light->foreground},
-        {{20 * 8, UI_POS_Y(1)}, "Peak:", Theme::getInstance()->fg_light->foreground}};
+        {{0 * 8, UI_POS_Y(0)}, "MIN", Theme::getInstance()->fg_light->foreground},
+        {{15 * 8, UI_POS_Y(0)}, "MAX", Theme::getInstance()->fg_light->foreground},
+        {{0 * 8, UI_POS_Y(1)}, "LNA", Theme::getInstance()->fg_light->foreground},
+        {{6 * 8, UI_POS_Y(1)}, "VGA", Theme::getInstance()->fg_light->foreground},
+        {{12 * 8, UI_POS_Y(1)}, "AMP", Theme::getInstance()->fg_light->foreground},
+        {{18 * 8, UI_POS_Y(1)}, "PK.", Theme::getInstance()->fg_light->foreground},
+        {{0 * 8, UI_POS_Y(2)}, "MARK", Theme::getInstance()->fg_light->foreground}};
 
     RxFrequencyField field_freq_start{
-        {6 * 8, UI_POS_Y(0)},
+        {4 * 8, UI_POS_Y(0)},
         nav_};
 
     RxFrequencyField field_freq_end{
-        {20 * 8, UI_POS_Y(0)},
+        {19 * 8, UI_POS_Y(0)},
         nav_};
 
+    TextField field_freq_mark{
+        {5 * 8, UI_POS_Y(2), 9 * 8, 16},
+        ""};
+
+    Text text_gain{
+        {19 * 8, UI_POS_Y(2), 8 * 8, 16},
+        "---"};
+
     LNAGainField field_lna{
-        {4 * 8, UI_POS_Y(1)}};
+        {3 * 8, UI_POS_Y(1)}};
 
     VGAGainField field_vga{
-        {11 * 8, UI_POS_Y(1)}};
+        {9 * 8, UI_POS_Y(1)}};
 
     RFAmpField field_rf_amp{
-        {18 * 8, UI_POS_Y(1)}};
+        {15 * 8, UI_POS_Y(1)}};
 
-    OptionsField options_peak_hold{
-        {25 * 8, UI_POS_Y(1)},
+    Checkbox checkbox_peak_hold{
+        {18 * 8, UI_POS_Y(1)},
         3,
-        {
-            {"OFF", 0},
-            {"ON ", 1},
-        }};
+        "PK",
+        true};  // small = true for same height as character
 
     SpectrumFFTView fft_view{{0, header_height, screen_width, fft_height}};
     spectrum::WaterfallWidget waterfall_widget{};
-    spectrum::FrequencyScale frequency_scale{};
 
     ChannelSpectrumFIFO* channel_fifo{nullptr};
+    ChannelSpectrum latest_spectrum{};
+    rf::Frequency marker_freq_{0};  // Current marker frequency (0 means use center)
+    uint8_t marker_pixel_index_{120};  // Marker pixel position (center by default, screen_width/2 = 240/2 = 120)
 
     void on_frequency_changed();
+    void on_marker_changed();
     void on_gain_changed();
     void update_receiver();
     void on_channel_spectrum(const ChannelSpectrum& spectrum);
+    void update_gain_display();
+    void plot_marker();
 
     MessageHandlerRegistration message_handler_channel_spectrum_config{
         Message::ID::ChannelSpectrumConfig,
