@@ -162,6 +162,7 @@ class SpectrumAnalyzerView : public View {
     ChannelSpectrum latest_spectrum{};
     rf::Frequency marker_freq_{0};  // Current marker frequency (0 means use center)
     uint8_t marker_pixel_index_{120};  // Marker pixel position (center by default, screen_width/2 = 240/2 = 120)
+    uint32_t update_counter_{0};  // Counter to throttle marker/gain display updates
 
     void on_frequency_changed();
     void on_marker_changed();

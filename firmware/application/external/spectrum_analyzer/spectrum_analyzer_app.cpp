@@ -38,6 +38,18 @@ SpectrumFFTView::SpectrumFFTView(const Rect parent_rect)
 
     // Peak hold starts disabled, so hide the waveform initially
     peak_hold_waveform.hidden(true);
+    
+    // Set up callback to sync peak hold pause state with main waveform
+    waveform.on_select = [this](Waveform&) {
+        // When main waveform is paused/unpaused, sync peak hold waveform
+        peak_hold_waveform.set_paused(waveform.is_paused());
+        // Also hide peak hold when paused (even if peak hold is enabled)
+        if (waveform.is_paused()) {
+            peak_hold_waveform.hidden(true);
+        } else if (peak_hold_enabled) {
+            peak_hold_waveform.hidden(false);
+        }
+    };
 
     add_children({&waveform, &peak_hold_waveform});
 }
@@ -48,6 +60,11 @@ void SpectrumFFTView::paint(Painter& painter) {
 }
 
 void SpectrumFFTView::on_channel_spectrum(const ChannelSpectrum& spectrum) {
+    // Don't update if waveform is paused (user clicked to turn off FFT)
+    if (waveform.is_paused()) {
+        return;
+    }
+    
     // Convert spectrum to display format
     // Spectrum has 256 bins, we need 240 for display
     // Map spectrum bins similar to how waterfall does it
@@ -90,8 +107,14 @@ void SpectrumFFTView::set_peak_hold(bool enabled) {
         // Hide the peak hold waveform when disabled
         peak_hold_waveform.hidden(true);
     } else {
-        // Show the peak hold waveform when enabled
-        peak_hold_waveform.hidden(false);
+        // Show the peak hold waveform when enabled, but only if FFT is not paused
+        if (waveform.is_paused()) {
+            peak_hold_waveform.hidden(true);
+            peak_hold_waveform.set_paused(true);
+        } else {
+            peak_hold_waveform.hidden(false);
+            peak_hold_waveform.set_paused(false);
+        }
     }
     set_dirty();  // Request redraw to show/hide peak hold
 }
@@ -147,25 +170,41 @@ SpectrumAnalyzerView::SpectrumAnalyzerView(NavigationView& nav)
     // Initialize marker pixel position to center
     marker_pixel_index_ = screen_width / 2;
     
+    // Initialize marker frequency to center of MIN/MAX range
+    if (freq_start_ > 0 && freq_end_ > 0) {
+        marker_freq_ = (freq_start_ + freq_end_) / 2;
+    } else {
+        marker_freq_ = center_freq;
+    }
+    
     // Initialize marker and gain display
     field_freq_mark.set_text("---");
     text_gain.set("---");
     
-    // Setup marker encoder scrolling (wrap around like looking glass app)
+    // Setup marker encoder scrolling (clamp to MIN/MAX range, no wrapping)
     field_freq_mark.on_encoder_change = [this](TextField&, EncoderEvent delta) {
         int32_t new_index = marker_pixel_index_ + delta;
-        // Wrap around screen width (like looking glass app)
+        // Clamp to valid screen range (0 to screen_width-1)
         if (new_index < 0)
-            marker_pixel_index_ = static_cast<uint8_t>(new_index + screen_width);
+            marker_pixel_index_ = 0;
         else if (new_index >= screen_width)
-            marker_pixel_index_ = static_cast<uint8_t>(new_index - screen_width);
+            marker_pixel_index_ = static_cast<uint8_t>(screen_width - 1);
         else
             marker_pixel_index_ = static_cast<uint8_t>(new_index);
         
-        // Update marker frequency from pixel position
-        rf::Frequency center = receiver_model.target_frequency();
-        int32_t offset_hz = ((marker_pixel_index_ - screen_width / 2) * bandwidth_hz) / screen_width;
-        marker_freq_ = center + offset_hz;
+        // Update marker frequency from pixel position using MIN/MAX range
+        rf::Frequency freq_min = freq_start_;
+        rf::Frequency freq_max = freq_end_;
+        rf::Frequency freq_range = freq_max - freq_min;
+        // Map pixel position to frequency: pixel 0 = MIN, pixel screen_width-1 = MAX
+        marker_freq_ = freq_min + (marker_pixel_index_ * freq_range) / (screen_width - 1);
+        
+        // Clamp marker frequency to MIN/MAX range (safety check)
+        if (marker_freq_ < freq_min) marker_freq_ = freq_min;
+        if (marker_freq_ > freq_max) marker_freq_ = freq_max;
+        
+        // Force immediate update when user moves marker (reset counter)
+        update_counter_ = 0;
         update_gain_display();
         plot_marker();  // Draw marker immediately
     };
@@ -201,10 +240,19 @@ SpectrumAnalyzerView::SpectrumAnalyzerView(NavigationView& nav)
         if (x >= screen_width) x = screen_width - 1;
         marker_pixel_index_ = static_cast<uint8_t>(x);
         
-        // Calculate frequency from touch position
-        rf::Frequency center = receiver_model.target_frequency();
-        int32_t offset_hz = ((marker_pixel_index_ - screen_width / 2) * bandwidth_hz) / screen_width;
-        marker_freq_ = center + offset_hz;
+        // Calculate frequency from touch position using MIN/MAX range
+        rf::Frequency freq_min = freq_start_;
+        rf::Frequency freq_max = freq_end_;
+        rf::Frequency freq_range = freq_max - freq_min;
+        // Map pixel position to frequency: pixel 0 = MIN, pixel screen_width-1 = MAX
+        marker_freq_ = freq_min + (marker_pixel_index_ * freq_range) / (screen_width - 1);
+        
+        // Clamp marker frequency to MIN/MAX range (safety check)
+        if (marker_freq_ < freq_min) marker_freq_ = freq_min;
+        if (marker_freq_ > freq_max) marker_freq_ = freq_max;
+        
+        // Force immediate update when user touches (reset counter)
+        update_counter_ = 0;
         update_gain_display();
         plot_marker();  // Draw marker immediately
     };
@@ -278,6 +326,10 @@ void SpectrumAnalyzerView::on_frequency_changed() {
         end = start + bandwidth_hz;
         field_freq_end.set_value(end);
     }
+    
+    // Update stored values
+    freq_start_ = start;
+    freq_end_ = end;
 
     // Calculate center frequency
     rf::Frequency center = (start + end) / 2;
@@ -291,7 +343,11 @@ void SpectrumAnalyzerView::on_frequency_changed() {
     // Restart spectrum streaming
     baseband::spectrum_streaming_start();
     
-    // Update marker display (marker pixel position stays the same, frequency recalculates)
+    // Reset marker to center of MIN/MAX range when frequencies change
+    marker_pixel_index_ = screen_width / 2;
+    marker_freq_ = center;
+    
+    // Update marker display
     update_gain_display();
 }
 
@@ -313,14 +369,19 @@ void SpectrumAnalyzerView::update_gain_display() {
         return;
     }
     
-    rf::Frequency center = receiver_model.target_frequency();
+    // Calculate marker frequency from pixel position using MIN/MAX range
+    rf::Frequency freq_min = freq_start_;
+    rf::Frequency freq_max = freq_end_;
+    rf::Frequency freq_range = freq_max - freq_min;
+    // Map pixel position to frequency: pixel 0 = MIN, pixel screen_width-1 = MAX
+    rf::Frequency marker = freq_min + (marker_pixel_index_ * freq_range) / (screen_width - 1);
     
-    // Calculate marker frequency from pixel position
-    int32_t offset_hz = ((marker_pixel_index_ - screen_width / 2) * bandwidth_hz) / screen_width;
-    rf::Frequency marker = center + offset_hz;
+    // Clamp marker frequency to MIN/MAX range (safety check)
+    if (marker < freq_min) marker = freq_min;
+    if (marker > freq_max) marker = freq_max;
     marker_freq_ = marker;  // Store for reference
     
-    // Convert pixel position to bin index
+    // Convert marker pixel position to bin index (using same mapping as FFT view)
     // The spectrum bins are mapped similar to FFT view and waterfall:
     // First half of screen (0-119): uses bins 256-120+0 to 256-120+119 = bins 136 to 255
     // Second half of screen (120-239): uses bins 0-119
@@ -339,19 +400,27 @@ void SpectrumAnalyzerView::update_gain_display() {
         if (bin_index >= 256) bin_index = 255;
     }
     
-    // Update marker frequency display using short format (like looking glass app)
-    field_freq_mark.set_text(to_string_short_freq(marker));
+    // Throttle updates: only update display every 8 cycles (for readability)
+    // Always update on first call or when counter wraps
+    update_counter_++;
+    constexpr uint32_t update_interval = 8;
+    bool should_update = (update_counter_ % update_interval == 0) || (update_counter_ == 1);
     
-    // Get dB value from spectrum
-    // spectrum.db is 0-255, converted from dB using: db = (db_value - 255.0f) / 5.0f
-    // So to get dB back: db = (spectrum.db[i] - 255.0f) / 5.0f
-    uint8_t db_value = latest_spectrum.db[bin_index];
-    float db = (static_cast<float>(db_value) - 255.0f) / 5.0f;
+    if (should_update) {
+        // Update marker frequency display using short format (like looking glass app)
+        field_freq_mark.set_text(to_string_short_freq(marker));
+        
+        // Get dB value from spectrum
+        // spectrum.db is 0-255, converted from dB using: db = (db_value - 255.0f) / 5.0f
+        // So to get dB back: db = (spectrum.db[i] - 255.0f) / 5.0f
+        uint8_t db_value = latest_spectrum.db[bin_index];
+        float db = (static_cast<float>(db_value) - 255.0f) / 5.0f;
+        
+        // Format as dB value
+        text_gain.set(to_string_dec_int(static_cast<int32_t>(db)) + " dB");
+    }
     
-    // Format as dB value
-    text_gain.set(to_string_dec_int(static_cast<int32_t>(db)) + " dB");
-    
-    // Draw marker triangle on waterfall
+    // Always draw marker triangle on waterfall (no throttling for visual feedback)
     plot_marker();
 }
 
