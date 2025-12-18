@@ -98,6 +98,10 @@ set(EXTCPPSRC
 	external/sstvtx/main.cpp
 	external/sstvtx/ui_sstvtx.cpp
 
+	#sstvrx
+	external/sstvrx/main.cpp
+	external/sstvrx/ui_sstvrx.cpp
+
 	#random 464  bytes.
 	external/random_password/main.cpp
 	external/random_password/ui_random_password.cpp
@@ -263,7 +267,11 @@ set(EXTCPPSRC
 
 	#spectrum_analyzer
 	external/spectrum_analyzer/main.cpp
-	external/spectrum_analyzer/spectrum_analyzer_app.cpp	
+	external/spectrum_analyzer/spectrum_analyzer_app.cpp
+
+	#flex_rx
+	external/flex_rx/main.cpp
+	external/flex_rx/ui_flex_rx.cpp
 )
 
 set(EXTAPPLIST
@@ -291,6 +299,7 @@ set(EXTAPPLIST
 	adsbtx
 	morse_tx
 	sstvtx
+	sstvrx
 	random_password
 	# acars_rx --not working
 	wefax_rx
@@ -331,4 +340,5 @@ set(EXTAPPLIST
 	bht_tx
 	morse_practice
 	adult_toys_controller
+	flex_rx
 )
