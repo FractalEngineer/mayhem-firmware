@@ -77,9 +77,12 @@ void SpectrumFFTView::on_channel_spectrum(const ChannelSpectrum& spectrum) {
             bin_idx = i - display_bins / 2;
         }
 
-        // Convert dB value to waveform value using same formula as AudioSpectrumView
-        // spectrum.db is 0-255, convert to -128 to 127 range for waveform
-        int16_t value = ((int16_t)spectrum.db[bin_idx] - 127) * 256;
+        // Convert dB value to waveform value with zero at bottom
+        // spectrum.db is 0-255, convert to -32768 to 32767 range for waveform
+        // This maps minimum dB (0) to bottom of screen and maximum dB (255) to top
+        // Use negative values for low dB (bottom) and positive for high dB (top)
+        // Center at 128 so db=0 maps to -32768 (bottom) and db=255 maps to 32512 (top)
+        int16_t value = ((int16_t)spectrum.db[bin_idx] - 128) * 256;
         spectrum_data[i] = value;
 
         // Update peak hold if enabled
