@@ -40,6 +40,7 @@ class SpectrumFFTView : public View {
     SpectrumFFTView& operator=(const SpectrumFFTView&) = delete;
 
     void paint(Painter& painter) override;
+    void set_parent_rect(const Rect new_parent_rect) override;
 
     void on_channel_spectrum(const ChannelSpectrum& spectrum);
 
@@ -90,8 +91,8 @@ class SpectrumAnalyzerView : public View {
     std::string title() const override { return "Spectrum Analyzer"; };
 
    private:
-    static constexpr ui::Dim header_height = 3 * 16 + 8;  // +8 to move FFT down 1 column
-    static constexpr ui::Dim fft_height = 3 * 16;
+    static constexpr ui::Dim header_height = 3 * 16;
+    static constexpr ui::Dim fft_height = 4 * 16;
     static constexpr uint32_t bandwidth_hz = 20000000;  // 20 MHz fixed bandwidth
 
     NavigationView& nav_;

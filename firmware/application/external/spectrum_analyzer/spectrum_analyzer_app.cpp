@@ -36,6 +36,10 @@ SpectrumFFTView::SpectrumFFTView(const Rect parent_rect)
     : View{parent_rect} {
     set_focusable(false);
 
+    // Update waveform widgets to use the parent rect's height instead of hardcoded 2*16
+    waveform.set_parent_rect({0, 0, parent_rect.width(), parent_rect.height()});
+    peak_hold_waveform.set_parent_rect({0, 0, parent_rect.width(), parent_rect.height()});
+
     // Peak hold starts disabled, so hide the waveform initially
     peak_hold_waveform.hidden(true);
     
@@ -57,6 +61,14 @@ SpectrumFFTView::SpectrumFFTView(const Rect parent_rect)
 void SpectrumFFTView::paint(Painter& painter) {
     const auto r = screen_rect();
     painter.fill_rectangle(r, Theme::getInstance()->bg_darkest->background);
+}
+
+void SpectrumFFTView::set_parent_rect(const Rect new_parent_rect) {
+    View::set_parent_rect(new_parent_rect);
+    
+    // Update waveform widgets to match the new parent rect size
+    waveform.set_parent_rect({0, 0, new_parent_rect.width(), new_parent_rect.height()});
+    peak_hold_waveform.set_parent_rect({0, 0, new_parent_rect.width(), new_parent_rect.height()});
 }
 
 void SpectrumFFTView::on_channel_spectrum(const ChannelSpectrum& spectrum) {
@@ -110,6 +122,8 @@ void SpectrumFFTView::set_peak_hold(bool enabled) {
         // Hide the peak hold waveform when disabled
         peak_hold_waveform.hidden(true);
     } else {
+        // Clear peak hold when enabling so it starts at zero gain (bottom)
+        clear_peak_hold();
         // Show the peak hold waveform when enabled, but only if FFT is not paused
         if (waveform.is_paused()) {
             peak_hold_waveform.hidden(true);
@@ -123,7 +137,9 @@ void SpectrumFFTView::set_peak_hold(bool enabled) {
 }
 
 void SpectrumFFTView::clear_peak_hold() {
-    std::fill(peak_hold_data, peak_hold_data + display_bins, 0);
+    // Initialize to minimum value (db=0, bottom of screen) so peak hold starts at zero gain
+    // This corresponds to -32768 in our conversion: ((0 - 128) * 256) = -32768
+    std::fill(peak_hold_data, peak_hold_data + display_bins, -32768);
     peak_hold_waveform.set_dirty();
 }
 
@@ -294,9 +310,11 @@ void SpectrumAnalyzerView::set_parent_rect(const Rect new_parent_rect) {
     const ui::Rect fft_rect{0, header_height, new_parent_rect.width(), fft_height};
     fft_view.set_parent_rect(fft_rect);
 
-    const ui::Rect waterfall_rect{0, header_height + fft_height,
+    // Add 8px spacing between FFT and waterfall for marker triangle
+    constexpr ui::Dim fft_waterfall_spacing = 8;
+    const ui::Rect waterfall_rect{0, header_height + fft_height + fft_waterfall_spacing,
                                    new_parent_rect.width(),
-                                   new_parent_rect.height() - header_height - fft_height};
+                                   new_parent_rect.height() - header_height - fft_height - fft_waterfall_spacing};
     waterfall_widget.set_parent_rect(waterfall_rect);
     
     // Re-initialize waterfall scroll area when rect changes (if already shown)
@@ -457,18 +475,18 @@ void SpectrumAnalyzerView::on_channel_spectrum(const ChannelSpectrum& spectrum) 
 }
 
 void SpectrumAnalyzerView::plot_marker() {
-    // Draw marker triangle on FFT view area (similar to looking glass app)
-    // The marker is drawn at the bottom of the FFT view, just above the waterfall
+    // Draw marker triangle in the 8px spacing between FFT and waterfall
     const ui::Rect fft_rect = fft_view.screen_rect();
-    const Coord marker_y = fft_rect.bottom() - 8;  // 8 pixels from bottom of FFT view
+    constexpr ui::Dim fft_waterfall_spacing = 8;
+    const Coord marker_y = fft_rect.bottom();  // Start at bottom of FFT, in the spacing area
     
     // Clamp marker position to valid range (uint8_t can't be < 0, so only check upper bound)
     uint8_t pos = marker_pixel_index_;
     if (pos >= screen_width) pos = screen_width - 1;
     
-    // Clear old marker area (8 pixels tall to cover the triangle)
+    // Clear old marker area (8 pixels tall to cover the triangle and spacing)
     portapack::display.fill_rectangle(
-        {0, marker_y, screen_width, 8},
+        {0, marker_y, screen_width, fft_waterfall_spacing},
         Theme::getInstance()->bg_darkest->background);
     
     // Draw triangle marker (pointing down) - same style as looking glass app
