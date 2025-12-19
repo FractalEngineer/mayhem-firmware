@@ -29,6 +29,8 @@
 #include "ui_widget.hpp"
 #include "app_settings.hpp"
 #include "radio_state.hpp"
+#include "gradient.hpp"
+#include <vector>
 
 namespace ui::external_app::spectrum_analyzer {
 
@@ -42,10 +44,23 @@ class SpectrumFFTView : public View {
     void paint(Painter& painter) override;
     void set_parent_rect(const Rect new_parent_rect) override;
 
-    void on_channel_spectrum(const ChannelSpectrum& spectrum);
+    // Returns true when a full line is complete
+    bool on_channel_spectrum(const ChannelSpectrum& spectrum, 
+                             rf::Frequency center_freq, 
+                             rf::Frequency range_start, 
+                             rf::Frequency range_end,
+                             bool sweeping,
+                             rf::Frequency marker_pixel_step,
+                             rf::Frequency each_bin_size,
+                             Gradient& gradient,
+                             std::vector<Color>& waterfall_row);
 
     void set_peak_hold(bool enabled);
     void clear_peak_hold();
+    
+    // Process bins and accumulate pixels (like looking glass)
+    bool process_bins(uint8_t* powerlevel, Gradient& gradient, std::vector<Color>& waterfall_row, bool fft_paused);
+    void get_max_power(const ChannelSpectrum& spectrum, uint8_t bin, uint8_t& max_power, bool sweeping);
 
    private:
     static constexpr size_t spectrum_size = 256;
@@ -54,6 +69,13 @@ class SpectrumFFTView : public View {
     int16_t spectrum_data[display_bins]{0};
     int16_t peak_hold_data[display_bins]{0};
     bool peak_hold_enabled{false};
+    
+    // Sweep accumulation state (for pixel-by-pixel accumulation like looking glass)
+    rf::Frequency marker_pixel_step_{0};  // Hz per pixel in full range
+    rf::Frequency each_bin_size_{0};  // Hz per spectrum bin
+    rf::Frequency bins_hz_size_{0};  // Accumulated Hz coverage
+    uint32_t pixel_index_{0};  // Current pixel being filled
+    uint8_t max_power_{0};  // Current max power for pixel being accumulated
 
     Waveform waveform{
         {0, 0, screen_width, 2 * 16},
@@ -94,6 +116,13 @@ class SpectrumAnalyzerView : public View {
     static constexpr ui::Dim header_height = 3 * 16;
     static constexpr ui::Dim fft_height = 4 * 16;
     static constexpr uint32_t bandwidth_hz = 20000000;  // 20 MHz fixed bandwidth
+    
+    // Sweep step calculation parameters (matching looking glass app FASTSCAN mode)
+    static constexpr size_t spec_nb_bins = 256;  // Number of spectrum bins
+    static constexpr size_t sweep_bin_length = 240;  // Number of bins to use per step (matches screen_width)
+    static constexpr size_t sweep_ignore_dc = 4;  // Number of DC bins to ignore
+    // Step size calculation: (bin_length + ignore_dc) * (bandwidth / spec_nb_bins)
+    // This gives approximately 19.06 MHz step size with minimal overlap
 
     NavigationView& nav_;
     RxRadioState radio_state_{};
@@ -164,6 +193,11 @@ class SpectrumAnalyzerView : public View {
     rf::Frequency marker_freq_{0};  // Current marker frequency (0 means use center)
     uint8_t marker_pixel_index_{120};  // Marker pixel position (center by default, screen_width/2 = 240/2 = 120)
     uint32_t update_counter_{0};  // Counter to throttle marker/gain display updates
+    
+    // Waterfall accumulation state (like looking glass)
+    std::vector<Color> spectrum_row_{};  // Accumulated color row for waterfall
+    rf::Frequency waterfall_bins_hz_size_{0};  // Accumulated Hz for waterfall
+    uint32_t waterfall_pixel_index_{0};  // Current waterfall pixel being filled
 
     // Sweep state variables
     rf::Frequency f_center_{0};  // Current center frequency during sweep

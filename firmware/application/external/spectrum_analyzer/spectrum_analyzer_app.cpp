@@ -28,6 +28,7 @@
 using namespace portapack;
 
 #include "string_format.hpp"
+#include <algorithm>
 
 namespace ui::external_app::spectrum_analyzer {
 
@@ -72,48 +73,159 @@ void SpectrumFFTView::set_parent_rect(const Rect new_parent_rect) {
     peak_hold_waveform.set_parent_rect({0, 0, new_parent_rect.width(), new_parent_rect.height()});
 }
 
-void SpectrumFFTView::on_channel_spectrum(const ChannelSpectrum& spectrum) {
-    // Don't update if waveform is paused (user clicked to turn off FFT)
-    if (waveform.is_paused()) {
-        return;
-    }
-    
-    // Convert spectrum to display format
-    // Spectrum has 256 bins, we need 240 for display
-    // Map spectrum bins similar to how waterfall does it
-    for (size_t i = 0; i < display_bins; i++) {
-        size_t bin_idx;
-        // Map to match waterfall display: first half uses upper bins, second half uses lower bins
-        if (i < display_bins / 2) {
-            bin_idx = 256 - display_bins / 2 + i;
+void SpectrumFFTView::get_max_power(const ChannelSpectrum& spectrum, uint8_t bin, uint8_t& max_power, bool sweeping) {
+    if (!sweeping) {
+        // Single pass mode: use standard mapping
+        if (bin < 120) {
+            if (spectrum.db[256 - 120 + bin] > max_power)
+                max_power = spectrum.db[256 - 120 + bin];
         } else {
-            bin_idx = i - display_bins / 2;
+            if (spectrum.db[bin - 120] > max_power)
+                max_power = spectrum.db[bin - 120];
         }
+    } else {
+        // Sweeping mode: use FASTSCAN mapping (like looking glass)
+        if (bin < 120) {
+            if (spectrum.db[134 + bin] > max_power)
+                max_power = spectrum.db[134 + bin];
+        } else {
+            if (spectrum.db[bin - 118] > max_power)
+                max_power = spectrum.db[bin - 118];
+        }
+    }
+}
 
-        // Convert dB value to waveform value with zero at bottom
-        // spectrum.db is 0-255, convert to -32768 to 32767 range for waveform
-        // This maps minimum dB (0) to bottom of screen and maximum dB (255) to top
-        // Use negative values for low dB (bottom) and positive for high dB (top)
-        // Center at 128 so db=0 maps to -32768 (bottom) and db=255 maps to 32512 (top)
-        int16_t value = ((int16_t)spectrum.db[bin_idx] - 128) * 256;
-        spectrum_data[i] = value;
-
-        // Update peak hold if enabled
-        if (peak_hold_enabled) {
-            if (value > peak_hold_data[i]) {
-                peak_hold_data[i] = value;
+bool SpectrumFFTView::process_bins(uint8_t* powerlevel, Gradient& gradient, std::vector<Color>& waterfall_row, bool fft_paused) {
+    bins_hz_size_ += each_bin_size_;  // Add Hz coverage from this bin
+    if (bins_hz_size_ >= marker_pixel_step_)  // Enough Hz accumulated for a pixel
+    {
+        // Convert power to waveform value
+        int16_t value = ((int16_t)(*powerlevel) - 128) * 256;
+        
+        // Only update FFT data if not paused
+        if (!fft_paused) {
+            spectrum_data[pixel_index_] = value;
+            
+            // Update peak hold if enabled
+            if (peak_hold_enabled) {
+                if (value > peak_hold_data[pixel_index_]) {
+                    peak_hold_data[pixel_index_] = value;
+                }
             }
         }
-    }
+        
+        // Always accumulate waterfall row (even when FFT is paused)
+        if (pixel_index_ < waterfall_row.size()) {
+            waterfall_row[pixel_index_] = gradient.lut[*powerlevel];
+        }
+        
+        *powerlevel = 0;  // Reset for next accumulation
+        pixel_index_++;
 
-    waveform.set_dirty();
-    
-    if (peak_hold_enabled) {
-        peak_hold_waveform.set_dirty();
+        if (pixel_index_ >= display_bins)  // Completed a full line
+        {
+            bins_hz_size_ = 0;  // Reset for next line
+            pixel_index_ = 0;
+            // Only mark FFT dirty if not paused
+            if (!fft_paused) {
+                waveform.set_dirty();
+                if (peak_hold_enabled) {
+                    peak_hold_waveform.set_dirty();
+                }
+                set_dirty();
+            }
+            return true;  // Signal that a new line is complete
+        }
+        bins_hz_size_ -= marker_pixel_step_;  // Carry excess Hz to next pixel
     }
+    return false;
+}
+
+bool SpectrumFFTView::on_channel_spectrum(const ChannelSpectrum& spectrum,
+                                           rf::Frequency center_freq,
+                                           rf::Frequency range_start,
+                                           rf::Frequency range_end,
+                                           bool sweeping,
+                                           rf::Frequency marker_pixel_step,
+                                           rf::Frequency each_bin_size,
+                                           Gradient& gradient,
+                                           std::vector<Color>& waterfall_row) {
+    // Update accumulation parameters (always needed for waterfall)
+    marker_pixel_step_ = marker_pixel_step;
+    each_bin_size_ = each_bin_size;
     
-    // Request marker redraw (will be handled by parent view)
-    set_dirty();
+    // If FFT is paused, only process waterfall, skip FFT waveform updates
+    bool fft_paused = waveform.is_paused();
+    
+    if (sweeping) {
+        // Sweeping mode: accumulate pixels bin by bin (like looking glass)
+        constexpr size_t bin_length = 240;  // Process all bins (screen_width)
+        constexpr size_t ignore_dc = 4;  // Ignore DC bins (like FASTSCAN)
+        
+        for (uint8_t bin = 0; bin < bin_length; bin++) {
+            get_max_power(spectrum, bin, max_power_, sweeping);
+            
+            // Process DC spike if at bin 119
+            if (bin == 119) {
+                uint8_t next_max_power = 0;
+                get_max_power(spectrum, bin + 1, next_max_power, sweeping);
+                for (uint8_t it = 0; it < ignore_dc; it++) {
+                    uint8_t med_max_power = (max_power_ + next_max_power) / 2;
+                    if (process_bins(&med_max_power, gradient, waterfall_row, fft_paused)) {
+                        return true;  // New line complete, return
+                    }
+                }
+            }
+            
+            // Process actual bin
+            if (process_bins(&max_power_, gradient, waterfall_row, fft_paused)) {
+                return true;  // New line complete, return
+            }
+        }
+        return false;  // Line not yet complete
+    } else {
+        // Single pass mode: fill all pixels directly
+        for (size_t i = 0; i < display_bins; i++) {
+            size_t bin_idx;
+            // Map to match waterfall display: first half uses upper bins, second half uses lower bins
+            if (i < display_bins / 2) {
+                bin_idx = 256 - display_bins / 2 + i;
+            } else {
+                bin_idx = i - display_bins / 2;
+            }
+
+            // Convert dB value to waveform value
+            int16_t value = ((int16_t)spectrum.db[bin_idx] - 128) * 256;
+            
+            // Only update FFT data if not paused
+            if (!fft_paused) {
+                spectrum_data[i] = value;
+
+                // Update peak hold if enabled
+                if (peak_hold_enabled) {
+                    if (value > peak_hold_data[i]) {
+                        peak_hold_data[i] = value;
+                    }
+                }
+            }
+            
+            // Always update waterfall row (even when FFT is paused)
+            if (i < waterfall_row.size()) {
+                uint8_t powerlevel = spectrum.db[bin_idx];
+                waterfall_row[i] = gradient.lut[powerlevel];
+            }
+        }
+        
+        // Only mark FFT dirty if not paused
+        if (!fft_paused) {
+            waveform.set_dirty();
+            if (peak_hold_enabled) {
+                peak_hold_waveform.set_dirty();
+            }
+            set_dirty();
+        }
+        return false;  // No line completion in single pass mode
+    }
 }
 
 void SpectrumFFTView::set_peak_hold(bool enabled) {
@@ -150,6 +262,9 @@ SpectrumAnalyzerView::SpectrumAnalyzerView(NavigationView& nav)
     : nav_(nav) {
     // Start baseband with wideband spectrum processor
     baseband::run_image(portapack::spi_flash::image_tag_wideband_spectrum);
+    
+    // Initialize waterfall accumulation
+    spectrum_row_.resize(screen_width);
 
     add_children({&rssi,
                   &channel,
@@ -180,7 +295,8 @@ SpectrumAnalyzerView::SpectrumAnalyzerView(NavigationView& nav)
     // Initialize sweep variables
     freq_start_ = field_freq_start.value();
     freq_end_ = field_freq_end.value();
-    freq_range_ = freq_end_ - freq_start_;
+    // Always use absolute range to handle cases where start > end
+    freq_range_ = (freq_end_ > freq_start_) ? (freq_end_ - freq_start_) : (freq_start_ - freq_end_);
     sweeping_ = false;
     f_center_ = 0;
     f_center_ini_ = 0;
@@ -202,8 +318,11 @@ SpectrumAnalyzerView::SpectrumAnalyzerView(NavigationView& nav)
     marker_pixel_index_ = screen_width / 2;
     
     // Initialize marker frequency to center of MIN/MAX range
+    // Always use correct min/max regardless of which field is higher
     if (freq_start_ > 0 && freq_end_ > 0) {
-        marker_freq_ = (freq_start_ + freq_end_) / 2;
+        rf::Frequency freq_min = std::min(freq_start_, freq_end_);
+        rf::Frequency freq_max = std::max(freq_start_, freq_end_);
+        marker_freq_ = (freq_min + freq_max) / 2;
     } else {
         marker_freq_ = center_freq;
     }
@@ -224,8 +343,9 @@ SpectrumAnalyzerView::SpectrumAnalyzerView(NavigationView& nav)
             marker_pixel_index_ = static_cast<uint8_t>(new_index);
         
         // Update marker frequency from pixel position using MIN/MAX range
-        rf::Frequency freq_min = freq_start_;
-        rf::Frequency freq_max = freq_end_;
+        // Always use correct min/max regardless of which field is higher
+        rf::Frequency freq_min = std::min(freq_start_, freq_end_);
+        rf::Frequency freq_max = std::max(freq_start_, freq_end_);
         rf::Frequency freq_range = freq_max - freq_min;
         // Map pixel position to frequency: pixel 0 = MIN, pixel screen_width-1 = MAX
         marker_freq_ = freq_min + (marker_pixel_index_ * freq_range) / (screen_width - 1);
@@ -272,8 +392,9 @@ SpectrumAnalyzerView::SpectrumAnalyzerView(NavigationView& nav)
         marker_pixel_index_ = static_cast<uint8_t>(x);
         
         // Calculate frequency from touch position using MIN/MAX range
-        rf::Frequency freq_min = freq_start_;
-        rf::Frequency freq_max = freq_end_;
+        // Always use correct min/max regardless of which field is higher
+        rf::Frequency freq_min = std::min(freq_start_, freq_end_);
+        rf::Frequency freq_max = std::max(freq_start_, freq_end_);
         rf::Frequency freq_range = freq_max - freq_min;
         // Map pixel position to frequency: pixel 0 = MIN, pixel screen_width-1 = MAX
         marker_freq_ = freq_min + (marker_pixel_index_ * freq_range) / (screen_width - 1);
@@ -364,20 +485,23 @@ void SpectrumAnalyzerView::on_frequency_changed() {
     // Update stored values
     freq_start_ = start;
     freq_end_ = end;
-    freq_range_ = end - start;
+    // Always use absolute range to handle cases where start > end
+    freq_range_ = (end > start) ? (end - start) : (start - end);
 
     // Determine if we need to sweep (range > bandwidth)
     sweeping_ = (freq_range_ > bandwidth_hz);
     
     if (sweeping_) {
-        // Calculate sweep parameters
+        // Calculate sweep parameters (matching looking glass app FASTSCAN mode)
         // Start center frequency: start + bandwidth/2
         f_center_ini_ = start + (bandwidth_hz / 2);
         // End center frequency: end - bandwidth/2
         f_center_end_ = end - (bandwidth_hz / 2);
-        // Step size: use bandwidth with some overlap (e.g., 80% overlap = step by 20% of bandwidth)
-        // This gives smoother coverage
-        sweep_step_ = bandwidth_hz / 5;  // 20% step = 80% overlap
+        // Step size calculation matches looking glass app:
+        // step = (bin_length + ignore_dc) * (bandwidth / spec_nb_bins)
+        // This gives approximately 19.06 MHz step size with minimal overlap
+        rf::Frequency each_bin_size = bandwidth_hz / spec_nb_bins;
+        sweep_step_ = (sweep_bin_length + sweep_ignore_dc) * each_bin_size;
         
         // Initialize current center frequency
         f_center_ = f_center_ini_;
@@ -405,8 +529,11 @@ void SpectrumAnalyzerView::on_frequency_changed() {
     baseband::spectrum_streaming_start();
     
     // Reset marker to center of MIN/MAX range when frequencies change
+    // Always use correct min/max regardless of which field is higher
+    rf::Frequency freq_min = std::min(start, end);
+    rf::Frequency freq_max = std::max(start, end);
     marker_pixel_index_ = screen_width / 2;
-    marker_freq_ = (start + end) / 2;
+    marker_freq_ = (freq_min + freq_max) / 2;
     
     // Update marker display
     update_gain_display();
@@ -439,8 +566,9 @@ void SpectrumAnalyzerView::update_gain_display() {
     }
     
     // Calculate marker frequency from pixel position using MIN/MAX range
-    rf::Frequency freq_min = freq_start_;
-    rf::Frequency freq_max = freq_end_;
+    // Always use correct min/max regardless of which field is higher
+    rf::Frequency freq_min = std::min(freq_start_, freq_end_);
+    rf::Frequency freq_max = std::max(freq_start_, freq_end_);
     rf::Frequency freq_range = freq_max - freq_min;
     // Map pixel position to frequency: pixel 0 = MIN, pixel screen_width-1 = MAX
     rf::Frequency marker = freq_min + (marker_pixel_index_ * freq_range) / (screen_width - 1);
@@ -549,11 +677,26 @@ void SpectrumAnalyzerView::on_channel_spectrum(const ChannelSpectrum& spectrum) 
     // Store latest spectrum for gain calculation
     latest_spectrum = spectrum;
     
-    // Pass to FFT view for display
-    fft_view.on_channel_spectrum(spectrum);
+    // Calculate accumulation parameters
+    rf::Frequency marker_pixel_step = freq_range_ / screen_width;  // Hz per pixel
+    constexpr size_t spec_nb_bins = 256;
+    rf::Frequency each_bin_size = bandwidth_hz / spec_nb_bins;  // Hz per bin
     
-    // Pass to waterfall widget (this will draw the waterfall)
-    waterfall_widget.on_channel_spectrum(spectrum);
+    // Pass to FFT view for display with frequency mapping info
+    bool line_complete = fft_view.on_channel_spectrum(spectrum, f_center_, freq_start_, freq_end_, sweeping_, 
+                                                       marker_pixel_step, each_bin_size,
+                                                       waterfall_widget.gradient, spectrum_row_);
+    
+    // Handle waterfall display
+    if (sweeping_ && line_complete) {
+        // When a full line is complete during sweeping, draw the accumulated waterfall row
+        const auto waterfall_rect = waterfall_widget.screen_rect();
+        const auto draw_y = portapack::display.scroll(1);
+        portapack::display.draw_pixels({{waterfall_rect.left(), draw_y}, {screen_width, 1}}, spectrum_row_);
+    } else if (!sweeping_) {
+        // Single pass mode: use standard waterfall
+        waterfall_widget.on_channel_spectrum(spectrum);
+    }
     
     // Update gain display
     update_gain_display();
