@@ -165,10 +165,20 @@ class SpectrumAnalyzerView : public View {
     uint8_t marker_pixel_index_{120};  // Marker pixel position (center by default, screen_width/2 = 240/2 = 120)
     uint32_t update_counter_{0};  // Counter to throttle marker/gain display updates
 
+    // Sweep state variables
+    rf::Frequency f_center_{0};  // Current center frequency during sweep
+    rf::Frequency f_center_ini_{0};  // Initial center frequency for sweep (start of range)
+    rf::Frequency f_center_end_{0};  // End center frequency for sweep (end of range)
+    rf::Frequency sweep_step_{0};  // Step size for center frequency increments
+    rf::Frequency freq_range_{0};  // Total frequency range (freq_end_ - freq_start_)
+    bool sweeping_{false};  // Whether we're currently sweeping (range > bandwidth)
+    int32_t sweep_direction_{1};  // 1 for forward, -1 for backward (for back-and-forth sweep)
+
     void on_frequency_changed();
     void on_marker_changed();
     void on_gain_changed();
     void update_receiver();
+    void retune();  // Change center frequency during sweep
     void on_channel_spectrum(const ChannelSpectrum& spectrum);
     void update_gain_display();
     void plot_marker();

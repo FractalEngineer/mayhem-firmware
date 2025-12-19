@@ -24,6 +24,7 @@
 #include "baseband_api.hpp"
 #include "portapack.hpp"
 #include "portapack_persistent_memory.hpp"
+#include "radio.hpp"
 using namespace portapack;
 
 #include "string_format.hpp"
@@ -176,6 +177,17 @@ SpectrumAnalyzerView::SpectrumAnalyzerView(NavigationView& nav)
         field_freq_end.set_value(center_freq + bandwidth_hz / 2);
     }
     
+    // Initialize sweep variables
+    freq_start_ = field_freq_start.value();
+    freq_end_ = field_freq_end.value();
+    freq_range_ = freq_end_ - freq_start_;
+    sweeping_ = false;
+    f_center_ = 0;
+    f_center_ini_ = 0;
+    f_center_end_ = 0;
+    sweep_step_ = 0;
+    sweep_direction_ = 1;
+    
     field_freq_start.updated = [this](rf::Frequency) {
         freq_start_ = field_freq_start.value();
         this->on_frequency_changed();
@@ -279,11 +291,12 @@ SpectrumAnalyzerView::SpectrumAnalyzerView(NavigationView& nav)
     // Load gradient for waterfall (use default if file loading fails)
     waterfall_widget.gradient.set_default();
 
-    // Setup receiver for 20MHz bandwidth
+    // Setup receiver for 20MHz bandwidth (must be before on_frequency_changed)
     update_receiver();
 
-    // Start spectrum streaming (must be after receiver is enabled)
-    baseband::spectrum_streaming_start();
+    // Initialize sweep parameters based on current frequency range
+    // This will also start spectrum streaming
+    on_frequency_changed();
 }
 
 SpectrumAnalyzerView::~SpectrumAnalyzerView() {
@@ -351,22 +364,49 @@ void SpectrumAnalyzerView::on_frequency_changed() {
     // Update stored values
     freq_start_ = start;
     freq_end_ = end;
+    freq_range_ = end - start;
 
-    // Calculate center frequency
-    rf::Frequency center = (start + end) / 2;
+    // Determine if we need to sweep (range > bandwidth)
+    sweeping_ = (freq_range_ > bandwidth_hz);
+    
+    if (sweeping_) {
+        // Calculate sweep parameters
+        // Start center frequency: start + bandwidth/2
+        f_center_ini_ = start + (bandwidth_hz / 2);
+        // End center frequency: end - bandwidth/2
+        f_center_end_ = end - (bandwidth_hz / 2);
+        // Step size: use bandwidth with some overlap (e.g., 80% overlap = step by 20% of bandwidth)
+        // This gives smoother coverage
+        sweep_step_ = bandwidth_hz / 5;  // 20% step = 80% overlap
+        
+        // Initialize current center frequency
+        f_center_ = f_center_ini_;
+        sweep_direction_ = 1;  // Start sweeping forward
+    } else {
+        // Single pass mode: just use center of range
+        f_center_ = (start + end) / 2;
+        f_center_ini_ = f_center_;
+        f_center_end_ = f_center_;
+        sweep_step_ = 0;
+    }
 
     // Restart spectrum streaming when frequency changes
     baseband::spectrum_streaming_stop();
     
     // Update receiver frequency
-    receiver_model.set_target_frequency(center);
+    if (sweeping_) {
+        // Use direct tuning for faster sweeps (like looking glass app)
+        radio::set_tuning_frequency(f_center_);
+    } else {
+        receiver_model.set_target_frequency(f_center_);
+    }
     
     // Restart spectrum streaming
     baseband::spectrum_streaming_start();
     
     // Reset marker to center of MIN/MAX range when frequencies change
     marker_pixel_index_ = screen_width / 2;
-    marker_freq_ = center;
+    marker_freq_ = (start + end) / 2;
     
     // Update marker display
     update_gain_display();
@@ -381,6 +421,14 @@ void SpectrumAnalyzerView::on_marker_changed() {
 void SpectrumAnalyzerView::on_gain_changed() {
     // Gain changes are handled by the field callbacks
     // This can be used for additional processing if needed
+}
+
+void SpectrumAnalyzerView::retune() {
+    // Change center frequency during sweep
+    // Use direct tuning for faster sweeps (like looking glass app)
+    radio::set_tuning_frequency(f_center_);
+    chThdSleepMilliseconds(5);  // Stabilize frequency
+    baseband::spectrum_streaming_start();  // Restart spectrum capture
 }
 
 void SpectrumAnalyzerView::update_gain_display() {
@@ -402,23 +450,63 @@ void SpectrumAnalyzerView::update_gain_display() {
     if (marker > freq_max) marker = freq_max;
     marker_freq_ = marker;  // Store for reference
     
-    // Convert marker pixel position to bin index (using same mapping as FFT view)
-    // The spectrum bins are mapped similar to FFT view and waterfall:
-    // First half of screen (0-119): uses bins 256-120+0 to 256-120+119 = bins 136 to 255
-    // Second half of screen (120-239): uses bins 0-119
-    // Center of screen (120) corresponds to bin 0 (center frequency)
+    // Convert marker frequency to bin index
     size_t bin_index;
-    int32_t screen_pos = marker_pixel_index_;
     
-    if (screen_pos < screen_width / 2) {
-        // Lower half: map to bins 136-255
-        if (screen_pos < 0) screen_pos = 0;
-        bin_index = 256 - (screen_width / 2) + screen_pos;
-        if (bin_index >= 256) bin_index = 255;
+    if (sweeping_) {
+        // When sweeping, calculate bin based on frequency offset from current center
+        rf::Frequency freq_offset = marker - f_center_;  // Offset from center frequency
+        rf::Frequency half_bandwidth = bandwidth_hz / 2;
+        
+        // Check if marker frequency is within current bandwidth
+        if (freq_offset < -half_bandwidth || freq_offset > half_bandwidth) {
+            // Marker is outside current sweep position, show "---" for gain
+            // Throttle updates: only update display every 8 cycles
+            update_counter_++;
+            constexpr uint32_t update_interval = 8;
+            bool should_update = (update_counter_ % update_interval == 0) || (update_counter_ == 1);
+            
+            if (should_update) {
+                field_freq_mark.set_text(to_string_short_freq(marker));
+                text_gain.set("---");
+            }
+            plot_marker();
+            return;
+        }
+        
+        // Map frequency offset to bin index
+        // Spectrum bins: bin 0 = center, bins 1-127 = positive offset, bins 128-255 = negative offset
+        // Display mapping: first half (0-119) = bins 136-255 (negative), second half (120-239) = bins 0-119 (positive)
+        rf::Frequency bin_hz = latest_spectrum.sampling_rate / 256;  // Hz per bin
+        int32_t bin_offset = static_cast<int32_t>(freq_offset / bin_hz);
+        
+        // Positive offset (marker > center) maps to bins 0-127, but display uses bins 0-119
+        // Negative offset (marker < center) maps to bins 128-255, but display uses bins 136-255
+        if (bin_offset >= 0) {
+            // Positive offset: use bins 0-119 (second half of screen)
+            bin_index = static_cast<size_t>(bin_offset);
+            if (bin_index >= 120) bin_index = 119;  // Clamp to display range
+        } else {
+            // Negative offset: use bins 136-255 (first half of screen)
+            // Map negative offset to bins 136-255: bin_offset = -1 -> bin 255, bin_offset = -120 -> bin 136
+            bin_index = 256 + bin_offset;  // bin_offset is negative, so this gives us the right bin
+            if (bin_index < 136) bin_index = 136;  // Clamp to display range
+            if (bin_index >= 256) bin_index = 255;
+        }
     } else {
-        // Upper half: map to bins 0-119
-        bin_index = screen_pos - (screen_width / 2);
-        if (bin_index >= 256) bin_index = 255;
+        // Single pass mode: use original mapping based on screen position
+        int32_t screen_pos = marker_pixel_index_;
+        
+        if (screen_pos < screen_width / 2) {
+            // Lower half: map to bins 136-255
+            if (screen_pos < 0) screen_pos = 0;
+            bin_index = 256 - (screen_width / 2) + screen_pos;
+            if (bin_index >= 256) bin_index = 255;
+        } else {
+            // Upper half: map to bins 0-119
+            bin_index = screen_pos - (screen_width / 2);
+            if (bin_index >= 256) bin_index = 255;
+        }
     }
     
     // Throttle updates: only update display every 8 cycles (for readability)
@@ -472,6 +560,37 @@ void SpectrumAnalyzerView::on_channel_spectrum(const ChannelSpectrum& spectrum) 
     
     // Redraw marker (in case FFT/waterfall redraw overwrote it)
     plot_marker();
+    
+    // Handle frequency sweeping if range > bandwidth
+    if (sweeping_) {
+        baseband::spectrum_streaming_stop();
+        
+        // Update center frequency for next sweep step
+        f_center_ += sweep_direction_ * sweep_step_;
+        
+        // Check if we've reached the end of the sweep range
+        if (sweep_direction_ > 0) {
+            // Sweeping forward
+            if (f_center_ >= f_center_end_) {
+                // Reached end, reverse direction
+                f_center_ = f_center_end_;
+                sweep_direction_ = -1;
+            }
+        } else {
+            // Sweeping backward
+            if (f_center_ <= f_center_ini_) {
+                // Reached start, reverse direction
+                f_center_ = f_center_ini_;
+                sweep_direction_ = 1;
+            }
+        }
+        
+        // Retune to new center frequency
+        retune();
+    } else {
+        // Single pass mode: just restart streaming
+        baseband::spectrum_streaming_start();
+    }
 }
 
 void SpectrumAnalyzerView::plot_marker() {
